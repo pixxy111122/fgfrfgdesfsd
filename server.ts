@@ -51,6 +51,25 @@ const DB_FILE = path.join(storageDir, 'users_db.json');
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+let isSyncedInContainer = false;
+let syncPromise: Promise<void> | null = null;
+
+app.use(async (req, res, next) => {
+  if (isVercel && !isSyncedInContainer) {
+    if (!syncPromise) {
+      console.log('[Vercel Boot] Starting on-demand startup synchronization...');
+      syncPromise = syncFromFirestoreOnStartup().then(() => {
+        isSyncedInContainer = true;
+        console.log('[Vercel Boot] On-demand startup synchronization finished successfully.');
+      }).catch(err => {
+        console.error('[Vercel Boot] On-demand startup synchronization failed:', err);
+      });
+    }
+    await syncPromise;
+  }
+  next();
+});
+
 // --- DATABASE TYPES ---
 interface UserAccount {
   username: string;
