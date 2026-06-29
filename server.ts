@@ -223,9 +223,11 @@ let firebaseDb: any = null;
 if (fs.existsSync(FIREBASE_CONFIG_PATH)) {
   try {
     const fbConfig = JSON.parse(fs.readFileSync(FIREBASE_CONFIG_PATH, 'utf8'));
-    admin.initializeApp({
-      projectId: fbConfig.projectId,
-    });
+    if ((admin as any).apps.length === 0) {
+      admin.initializeApp({
+        projectId: fbConfig.projectId,
+      });
+    }
     if (fbConfig.firestoreDatabaseId && fbConfig.firestoreDatabaseId !== '(default)') {
       firebaseDb = getFirestore(fbConfig.firestoreDatabaseId);
     } else {
@@ -1582,112 +1584,132 @@ async function syncFromFirestoreOnStartup() {
     console.log('[Firebase] Skipping startup sync (Firebase not initialized).');
     return;
   }
-  console.log('[Firebase] Starting database synchronization from Cloud Firestore...');
+  console.log('[Firebase] Starting database synchronization from Cloud Firestore in parallel...');
   try {
-    // 1. Settings
-    const settingsDoc = await firebaseDb.collection('shopee_settings').doc('global').get();
-    if (settingsDoc.exists) {
-      const fbSettings = settingsDoc.data() as SystemSettings;
-      settingsCache = fbSettings;
-      fs.writeFileSync(SETTINGS_FILE, JSON.stringify(fbSettings, null, 2), 'utf-8');
-      console.log('[Firebase] Loaded global settings from Firestore.');
-    } else {
-      const cleanSettings = JSON.parse(JSON.stringify(settingsCache));
-      await firebaseDb.collection('shopee_settings').doc('global').set(cleanSettings);
-      console.log('[Firebase] Migrated default settings to Firestore.');
-    }
+    const tasks = [
+      // 1. Settings
+      (async () => {
+        const settingsDoc = await firebaseDb.collection('shopee_settings').doc('global').get();
+        if (settingsDoc.exists) {
+          const fbSettings = settingsDoc.data() as SystemSettings;
+          settingsCache = fbSettings;
+          fs.writeFileSync(SETTINGS_FILE, JSON.stringify(fbSettings, null, 2), 'utf-8');
+          console.log('[Firebase] Loaded global settings from Firestore.');
+        } else {
+          const cleanSettings = JSON.parse(JSON.stringify(settingsCache));
+          await firebaseDb.collection('shopee_settings').doc('global').set(cleanSettings);
+          console.log('[Firebase] Migrated default settings to Firestore.');
+        }
+      })(),
 
-    // 2. Users
-    const usersSnapshot = await firebaseDb.collection('users').get();
-    if (!usersSnapshot.empty) {
-      const fbUsers: UserAccount[] = [];
-      usersSnapshot.forEach((docSnap: any) => {
-        fbUsers.push(docSnap.data() as UserAccount);
-      });
-      usersCache = fbUsers;
-      fs.writeFileSync(DB_FILE, JSON.stringify(fbUsers, null, 2), 'utf-8');
-      console.log(`[Firebase] Loaded ${fbUsers.length} users from Firestore.`);
-    } else {
-      for (const u of usersCache) {
-        const cleanUser = JSON.parse(JSON.stringify(u));
-        await firebaseDb.collection('users').doc(u.phone).set(cleanUser);
-      }
-      console.log(`[Firebase] Migrated ${usersCache.length} users to Firestore.`);
-    }
+      // 2. Users
+      (async () => {
+        const usersSnapshot = await firebaseDb.collection('users').get();
+        if (!usersSnapshot.empty) {
+          const fbUsers: UserAccount[] = [];
+          usersSnapshot.forEach((docSnap: any) => {
+            fbUsers.push(docSnap.data() as UserAccount);
+          });
+          usersCache = fbUsers;
+          fs.writeFileSync(DB_FILE, JSON.stringify(fbUsers, null, 2), 'utf-8');
+          console.log(`[Firebase] Loaded ${fbUsers.length} users from Firestore.`);
+        } else {
+          const writePromises = usersCache.map(u => {
+            const cleanUser = JSON.parse(JSON.stringify(u));
+            return firebaseDb.collection('users').doc(u.phone).set(cleanUser);
+          });
+          await Promise.all(writePromises);
+          console.log(`[Firebase] Migrated ${usersCache.length} users to Firestore.`);
+        }
+      })(),
 
-    // 3. Transactions
-    const txsSnapshot = await firebaseDb.collection('transactions').get();
-    if (!txsSnapshot.empty) {
-      const fbTxs: Transaction[] = [];
-      txsSnapshot.forEach((docSnap: any) => {
-        fbTxs.push(docSnap.data() as Transaction);
-      });
-      fs.writeFileSync(TRANSACTIONS_FILE, JSON.stringify(fbTxs, null, 2), 'utf-8');
-      console.log(`[Firebase] Loaded ${fbTxs.length} transactions from Firestore.`);
-    } else {
-      const localTxs = loadTransactions();
-      for (const tx of localTxs) {
-        const cleanTx = JSON.parse(JSON.stringify(tx));
-        await firebaseDb.collection('transactions').doc(tx.id).set(cleanTx);
-      }
-      console.log(`[Firebase] Migrated ${localTxs.length} transactions to Firestore.`);
-    }
+      // 3. Transactions
+      (async () => {
+        const txsSnapshot = await firebaseDb.collection('transactions').get();
+        if (!txsSnapshot.empty) {
+          const fbTxs: Transaction[] = [];
+          txsSnapshot.forEach((docSnap: any) => {
+            fbTxs.push(docSnap.data() as Transaction);
+          });
+          fs.writeFileSync(TRANSACTIONS_FILE, JSON.stringify(fbTxs, null, 2), 'utf-8');
+          console.log(`[Firebase] Loaded ${fbTxs.length} transactions from Firestore.`);
+        } else {
+          const localTxs = loadTransactions();
+          const writePromises = localTxs.map(tx => {
+            const cleanTx = JSON.parse(JSON.stringify(tx));
+            return firebaseDb.collection('transactions').doc(tx.id).set(cleanTx);
+          });
+          await Promise.all(writePromises);
+          console.log(`[Firebase] Migrated ${localTxs.length} transactions to Firestore.`);
+        }
+      })(),
 
-    // 4. Products
-    const prodSnapshot = await firebaseDb.collection('products').get();
-    if (!prodSnapshot.empty) {
-      const fbProds: any[] = [];
-      prodSnapshot.forEach((docSnap: any) => {
-        fbProds.push(docSnap.data());
-      });
-      fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(fbProds, null, 2), 'utf-8');
-      console.log(`[Firebase] Loaded ${fbProds.length} products from Firestore.`);
-    } else {
-      const localProds = loadProducts();
-      for (const p of localProds) {
-        const cleanProd = JSON.parse(JSON.stringify(p));
-        await firebaseDb.collection('products').doc(p.id).set(cleanProd);
-      }
-      console.log(`[Firebase] Migrated ${localProds.length} products to Firestore.`);
-    }
+      // 4. Products
+      (async () => {
+        const prodSnapshot = await firebaseDb.collection('products').get();
+        if (!prodSnapshot.empty) {
+          const fbProds: any[] = [];
+          prodSnapshot.forEach((docSnap: any) => {
+            fbProds.push(docSnap.data());
+          });
+          fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(fbProds, null, 2), 'utf-8');
+          console.log(`[Firebase] Loaded ${fbProds.length} products from Firestore.`);
+        } else {
+          const localProds = loadProducts();
+          const writePromises = localProds.map(p => {
+            const cleanProd = JSON.parse(JSON.stringify(p));
+            return firebaseDb.collection('products').doc(p.id).set(cleanProd);
+          });
+          await Promise.all(writePromises);
+          console.log(`[Firebase] Migrated ${localProds.length} products to Firestore.`);
+        }
+      })(),
 
-    // 5. Activity Products
-    const actSnapshot = await firebaseDb.collection('activity_products').get();
-    if (!actSnapshot.empty) {
-      const fbActProds: any[] = [];
-      actSnapshot.forEach((docSnap: any) => {
-        fbActProds.push(docSnap.data());
-      });
-      fs.writeFileSync(ACTIVITY_PRODUCTS_FILE, JSON.stringify(fbActProds, null, 2), 'utf-8');
-      console.log(`[Firebase] Loaded ${fbActProds.length} activity products from Firestore.`);
-    } else {
-      const localActProds = loadActivityProducts();
-      for (const ap of localActProds) {
-        const cleanAp = JSON.parse(JSON.stringify(ap));
-        await firebaseDb.collection('activity_products').doc(ap.id).set(cleanAp);
-      }
-      console.log(`[Firebase] Migrated ${localActProds.length} activity products to Firestore.`);
-    }
+      // 5. Activity Products
+      (async () => {
+        const actSnapshot = await firebaseDb.collection('activity_products').get();
+        if (!actSnapshot.empty) {
+          const fbActProds: any[] = [];
+          actSnapshot.forEach((docSnap: any) => {
+            fbActProds.push(docSnap.data());
+          });
+          fs.writeFileSync(ACTIVITY_PRODUCTS_FILE, JSON.stringify(fbActProds, null, 2), 'utf-8');
+          console.log(`[Firebase] Loaded ${fbActProds.length} activity products from Firestore.`);
+        } else {
+          const localActProds = loadActivityProducts();
+          const writePromises = localActProds.map(ap => {
+            const cleanAp = JSON.parse(JSON.stringify(ap));
+            return firebaseDb.collection('activity_products').doc(ap.id).set(cleanAp);
+          });
+          await Promise.all(writePromises);
+          console.log(`[Firebase] Migrated ${localActProds.length} activity products to Firestore.`);
+        }
+      })(),
 
-    // 6. Match Requests
-    const matchSnapshot = await firebaseDb.collection('match_requests').get();
-    if (!matchSnapshot.empty) {
-      const fbMatchReqs: MatchRequest[] = [];
-      matchSnapshot.forEach((docSnap: any) => {
-        fbMatchReqs.push(docSnap.data() as MatchRequest);
-      });
-      fs.writeFileSync(MATCH_REQUESTS_FILE, JSON.stringify(fbMatchReqs, null, 2), 'utf-8');
-      console.log(`[Firebase] Loaded ${fbMatchReqs.length} match requests from Firestore.`);
-    } else {
-      const localMatchReqs = loadMatchRequests();
-      for (const mr of localMatchReqs) {
-        const cleanMr = JSON.parse(JSON.stringify(mr));
-        await firebaseDb.collection('match_requests').doc(mr.phone).set(cleanMr);
-      }
-      console.log(`[Firebase] Migrated ${localMatchReqs.length} match requests to Firestore.`);
-    }
+      // 6. Match Requests
+      (async () => {
+        const matchSnapshot = await firebaseDb.collection('match_requests').get();
+        if (!matchSnapshot.empty) {
+          const fbMatchReqs: MatchRequest[] = [];
+          matchSnapshot.forEach((docSnap: any) => {
+            fbMatchReqs.push(docSnap.data() as MatchRequest);
+          });
+          fs.writeFileSync(MATCH_REQUESTS_FILE, JSON.stringify(fbMatchReqs, null, 2), 'utf-8');
+          console.log(`[Firebase] Loaded ${fbMatchReqs.length} match requests from Firestore.`);
+        } else {
+          const localMatchReqs = loadMatchRequests();
+          const writePromises = localMatchReqs.map(mr => {
+            const cleanMr = JSON.parse(JSON.stringify(mr));
+            return firebaseDb.collection('match_requests').doc(mr.phone).set(cleanMr);
+          });
+          await Promise.all(writePromises);
+          console.log(`[Firebase] Migrated ${localMatchReqs.length} match requests to Firestore.`);
+        }
+      })()
+    ];
 
-    console.log('[Firebase] Firestore synchronization completed successfully!');
+    await Promise.all(tasks);
+    console.log('[Firebase] Parallel Firestore synchronization completed successfully!');
   } catch (err) {
     console.error('[Firebase] Error synchronizing Firestore database on startup:', err);
   }
