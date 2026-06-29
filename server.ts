@@ -202,17 +202,35 @@ let firebaseDb: any = null;
 if (fs.existsSync(FIREBASE_CONFIG_PATH)) {
   try {
     const fbConfig = JSON.parse(fs.readFileSync(FIREBASE_CONFIG_PATH, 'utf8'));
-    if ((admin as any).apps.length === 0) {
-      admin.initializeApp({
-        projectId: fbConfig.projectId,
-      });
-    }
-    if (fbConfig.firestoreDatabaseId && fbConfig.firestoreDatabaseId !== '(default)') {
-      firebaseDb = getFirestore(fbConfig.firestoreDatabaseId);
+    
+    // We only initialize Firebase Admin on Vercel/Serverless if credentials are explicitly provided.
+    // Otherwise, on GCP / Cloud Run, we can initialize it because it will use Application Default Credentials.
+    const hasCredentials = !!(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.FIREBASE_SERVICE_ACCOUNT);
+    const shouldInitialize = !isVercel || hasCredentials;
+
+    if (shouldInitialize) {
+      if ((admin as any).apps.length === 0) {
+        if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+          const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+          admin.initializeApp({
+            credential: (admin as any).credential.cert(serviceAccount),
+            projectId: fbConfig.projectId,
+          });
+        } else {
+          admin.initializeApp({
+            projectId: fbConfig.projectId,
+          });
+        }
+      }
+      if (fbConfig.firestoreDatabaseId && fbConfig.firestoreDatabaseId !== '(default)') {
+        firebaseDb = getFirestore(fbConfig.firestoreDatabaseId);
+      } else {
+        firebaseDb = getFirestore();
+      }
+      console.log('[Firebase] Admin SDK initialized successfully with database ID:', fbConfig.firestoreDatabaseId || '(default)');
     } else {
-      firebaseDb = getFirestore();
+      console.log('[Firebase] Skipping Admin SDK initialization on Vercel due to missing service account credentials. Falling back to local JSON database.');
     }
-    console.log('[Firebase] Admin SDK initialized successfully with database ID:', fbConfig.firestoreDatabaseId || '(default)');
   } catch (err) {
     console.error('[Firebase] Failed to initialize Firebase Admin SDK:', err);
   }
@@ -1781,9 +1799,9 @@ async function startServer() {
   });
 }
 
-if (isServerless) {
+if (isVercel) {
   syncFromFirestoreOnStartup().catch(err => {
-    console.error('[Firebase] Background serverless startup sync failed:', err);
+    console.error('[Firebase] Background Vercel startup sync failed:', err);
   });
 }
 
