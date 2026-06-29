@@ -54,18 +54,17 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 let isSyncedInContainer = false;
 let syncPromise: Promise<void> | null = null;
 
-app.use(async (req, res, next) => {
+app.use((req, res, next) => {
   if (isVercel && !isSyncedInContainer) {
     if (!syncPromise) {
-      console.log('[Vercel Boot] Starting on-demand startup synchronization...');
+      console.log('[Vercel Boot] Starting on-demand background startup synchronization...');
       syncPromise = syncFromFirestoreOnStartup().then(() => {
         isSyncedInContainer = true;
-        console.log('[Vercel Boot] On-demand startup synchronization finished successfully.');
+        console.log('[Vercel Boot] On-demand background startup synchronization finished successfully.');
       }).catch(err => {
-        console.error('[Vercel Boot] On-demand startup synchronization failed:', err);
+        console.error('[Vercel Boot] On-demand background startup synchronization failed:', err);
       });
     }
-    await syncPromise;
   }
   next();
 });
@@ -1579,6 +1578,18 @@ app.post('/api/admin/admins/update', (req, res) => {
 
 
 // --- CLOUD FIRESTORE STARTUP SYNCHRONIZATION ---
+function withTimeout(promise: Promise<any>, timeoutMs: number, name: string): Promise<any> {
+  let timer: any;
+  const timeoutPromise = new Promise<any>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`[Timeout] ${name} took longer than ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
 async function syncFromFirestoreOnStartup() {
   if (!firebaseDb) {
     console.log('[Firebase] Skipping startup sync (Firebase not initialized).');
@@ -1589,7 +1600,11 @@ async function syncFromFirestoreOnStartup() {
     const tasks = [
       // 1. Settings
       (async () => {
-        const settingsDoc = await firebaseDb.collection('shopee_settings').doc('global').get();
+        const settingsDoc = await withTimeout(
+          firebaseDb.collection('shopee_settings').doc('global').get(),
+          2000,
+          'Firestore settings get'
+        );
         if (settingsDoc.exists) {
           const fbSettings = settingsDoc.data() as SystemSettings;
           settingsCache = fbSettings;
@@ -1597,14 +1612,22 @@ async function syncFromFirestoreOnStartup() {
           console.log('[Firebase] Loaded global settings from Firestore.');
         } else {
           const cleanSettings = JSON.parse(JSON.stringify(settingsCache));
-          await firebaseDb.collection('shopee_settings').doc('global').set(cleanSettings);
+          await withTimeout(
+            firebaseDb.collection('shopee_settings').doc('global').set(cleanSettings),
+            2000,
+            'Firestore settings set'
+          );
           console.log('[Firebase] Migrated default settings to Firestore.');
         }
       })(),
 
       // 2. Users
       (async () => {
-        const usersSnapshot = await firebaseDb.collection('users').get();
+        const usersSnapshot = await withTimeout(
+          firebaseDb.collection('users').get(),
+          2000,
+          'Firestore users get'
+        );
         if (!usersSnapshot.empty) {
           const fbUsers: UserAccount[] = [];
           usersSnapshot.forEach((docSnap: any) => {
@@ -1616,7 +1639,11 @@ async function syncFromFirestoreOnStartup() {
         } else {
           const writePromises = usersCache.map(u => {
             const cleanUser = JSON.parse(JSON.stringify(u));
-            return firebaseDb.collection('users').doc(u.phone).set(cleanUser);
+            return withTimeout(
+              firebaseDb.collection('users').doc(u.phone).set(cleanUser),
+              2000,
+              `Firestore user set (${u.phone})`
+            );
           });
           await Promise.all(writePromises);
           console.log(`[Firebase] Migrated ${usersCache.length} users to Firestore.`);
@@ -1625,7 +1652,11 @@ async function syncFromFirestoreOnStartup() {
 
       // 3. Transactions
       (async () => {
-        const txsSnapshot = await firebaseDb.collection('transactions').get();
+        const txsSnapshot = await withTimeout(
+          firebaseDb.collection('transactions').get(),
+          2000,
+          'Firestore transactions get'
+        );
         if (!txsSnapshot.empty) {
           const fbTxs: Transaction[] = [];
           txsSnapshot.forEach((docSnap: any) => {
@@ -1637,7 +1668,11 @@ async function syncFromFirestoreOnStartup() {
           const localTxs = loadTransactions();
           const writePromises = localTxs.map(tx => {
             const cleanTx = JSON.parse(JSON.stringify(tx));
-            return firebaseDb.collection('transactions').doc(tx.id).set(cleanTx);
+            return withTimeout(
+              firebaseDb.collection('transactions').doc(tx.id).set(cleanTx),
+              2000,
+              `Firestore transaction set (${tx.id})`
+            );
           });
           await Promise.all(writePromises);
           console.log(`[Firebase] Migrated ${localTxs.length} transactions to Firestore.`);
@@ -1646,7 +1681,11 @@ async function syncFromFirestoreOnStartup() {
 
       // 4. Products
       (async () => {
-        const prodSnapshot = await firebaseDb.collection('products').get();
+        const prodSnapshot = await withTimeout(
+          firebaseDb.collection('products').get(),
+          2000,
+          'Firestore products get'
+        );
         if (!prodSnapshot.empty) {
           const fbProds: any[] = [];
           prodSnapshot.forEach((docSnap: any) => {
@@ -1658,7 +1697,11 @@ async function syncFromFirestoreOnStartup() {
           const localProds = loadProducts();
           const writePromises = localProds.map(p => {
             const cleanProd = JSON.parse(JSON.stringify(p));
-            return firebaseDb.collection('products').doc(p.id).set(cleanProd);
+            return withTimeout(
+              firebaseDb.collection('products').doc(p.id).set(cleanProd),
+              2000,
+              `Firestore product set (${p.id})`
+            );
           });
           await Promise.all(writePromises);
           console.log(`[Firebase] Migrated ${localProds.length} products to Firestore.`);
@@ -1667,7 +1710,11 @@ async function syncFromFirestoreOnStartup() {
 
       // 5. Activity Products
       (async () => {
-        const actSnapshot = await firebaseDb.collection('activity_products').get();
+        const actSnapshot = await withTimeout(
+          firebaseDb.collection('activity_products').get(),
+          2000,
+          'Firestore activity_products get'
+        );
         if (!actSnapshot.empty) {
           const fbActProds: any[] = [];
           actSnapshot.forEach((docSnap: any) => {
@@ -1679,7 +1726,11 @@ async function syncFromFirestoreOnStartup() {
           const localActProds = loadActivityProducts();
           const writePromises = localActProds.map(ap => {
             const cleanAp = JSON.parse(JSON.stringify(ap));
-            return firebaseDb.collection('activity_products').doc(ap.id).set(cleanAp);
+            return withTimeout(
+              firebaseDb.collection('activity_products').doc(ap.id).set(cleanAp),
+              2000,
+              `Firestore activity_product set (${ap.id})`
+            );
           });
           await Promise.all(writePromises);
           console.log(`[Firebase] Migrated ${localActProds.length} activity products to Firestore.`);
@@ -1688,7 +1739,11 @@ async function syncFromFirestoreOnStartup() {
 
       // 6. Match Requests
       (async () => {
-        const matchSnapshot = await firebaseDb.collection('match_requests').get();
+        const matchSnapshot = await withTimeout(
+          firebaseDb.collection('match_requests').get(),
+          2000,
+          'Firestore match_requests get'
+        );
         if (!matchSnapshot.empty) {
           const fbMatchReqs: MatchRequest[] = [];
           matchSnapshot.forEach((docSnap: any) => {
@@ -1700,7 +1755,11 @@ async function syncFromFirestoreOnStartup() {
           const localMatchReqs = loadMatchRequests();
           const writePromises = localMatchReqs.map(mr => {
             const cleanMr = JSON.parse(JSON.stringify(mr));
-            return firebaseDb.collection('match_requests').doc(mr.phone).set(cleanMr);
+            return withTimeout(
+              firebaseDb.collection('match_requests').doc(mr.phone).set(cleanMr),
+              2000,
+              `Firestore match_request set (${mr.phone})`
+            );
           });
           await Promise.all(writePromises);
           console.log(`[Firebase] Migrated ${localMatchReqs.length} match requests to Firestore.`);
