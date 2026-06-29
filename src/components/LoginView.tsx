@@ -126,7 +126,14 @@ export default function LoginView({ onLoginSuccess, onClose, settings, onSetting
         body: JSON.stringify({ phone, password }),
       });
 
-      const data = await response.json();
+      let data: any = {};
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        const text = await response.text();
+        throw new Error(text.substring(0, 150) || 'เซิร์ฟเวอร์ส่งการตอบกลับที่ไม่ถูกต้อง');
+      }
 
       if (!response.ok) {
         throw new Error(data.error || 'เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
@@ -192,7 +199,14 @@ export default function LoginView({ onLoginSuccess, onClose, settings, onSetting
         }),
       });
 
-      const data = await response.json();
+      let data: any = {};
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        const text = await response.text();
+        throw new Error(text.substring(0, 150) || 'เซิร์ฟเวอร์ส่งการตอบกลับที่ไม่ถูกต้อง');
+      }
 
       if (!response.ok) {
         throw new Error(data.error || 'การสมัครสมาชิกล้มเหลว');
