@@ -13,11 +13,12 @@ const app = express();
 const PORT = 3000;
 
 const isVercel = !!process.env.VERCEL;
-const storageDir = isVercel ? '/tmp' : process.cwd();
+const isServerless = isVercel || !!process.env.K_SERVICE || !!process.env.FUNCTION_TARGET || !!process.env.FUNCTION_NAME;
+const storageDir = isServerless ? '/tmp' : process.cwd();
 
-// Copy default database files to /tmp for writing if running on Vercel
-function initVercelStorage() {
-  if (!isVercel) return;
+// Copy default database files to /tmp for writing if running in a serverless/read-only environment
+function initServerlessStorage() {
+  if (!isServerless) return;
   const filesToCopy = [
     'users_db.json',
     'shopee_settings.json',
@@ -33,18 +34,15 @@ function initVercelStorage() {
       try {
         if (fs.existsSync(src)) {
           fs.copyFileSync(src, dest);
-          console.log(`[Vercel Storage] Copied ${filename} to /tmp`);
-        } else {
-          fs.writeFileSync(dest, filename === 'shopee_settings.json' ? '{}' : '[]', 'utf-8');
-          console.log(`[Vercel Storage] Created default empty ${filename} in /tmp`);
+          console.log(`[Serverless Storage] Copied ${filename} to /tmp`);
         }
       } catch (err) {
-        console.error(`[Vercel Storage] Failed to init ${filename} in /tmp:`, err);
+        console.error(`[Serverless Storage] Failed to copy ${filename} to /tmp:`, err);
       }
     }
   }
 }
-initVercelStorage();
+initServerlessStorage();
 
 const DB_FILE = path.join(storageDir, 'users_db.json');
 
@@ -201,7 +199,7 @@ const DEFAULT_ADMIN: UserAccount = {
 const FIREBASE_CONFIG_PATH = path.join(process.cwd(), 'firebase-applet-config.json');
 let firebaseDb: any = null;
 
-if (fs.existsSync(FIREBASE_CONFIG_PATH) && !isVercel) {
+if (fs.existsSync(FIREBASE_CONFIG_PATH)) {
   try {
     const fbConfig = JSON.parse(fs.readFileSync(FIREBASE_CONFIG_PATH, 'utf8'));
     if ((admin as any).apps.length === 0) {
@@ -1780,6 +1778,12 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Full-Stack Server] running on http://0.0.0.0:${PORT}`);
+  });
+}
+
+if (isServerless) {
+  syncFromFirestoreOnStartup().catch(err => {
+    console.error('[Firebase] Background serverless startup sync failed:', err);
   });
 }
 
